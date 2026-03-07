@@ -6,7 +6,3 @@ class DataSourceAdapter(ABC):
     @abstractmethod
     def load_definitions(self) -> List[CubeDefinition]:
         pass
-
-    @abstractmethod
-    def validate_source(self) -> bool:
-        pass
