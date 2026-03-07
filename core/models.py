@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Set
+from typing import Optional
 
 @dataclass(frozen=True, slots=True)
 class Cube:
