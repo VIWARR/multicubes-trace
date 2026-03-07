@@ -8,19 +8,14 @@ class DataFrameAdapter(DataSourceAdapter):
 
     def __init__(self, df: pd.DataFrame):
         self.df = df
-
-    def validate_source(self) -> bool:
-        return self.REQUIRED_COLUMNS.issubset(self.df.columns)
     
     def load_definitions(self) -> List[CubeDefinition]:
-        if not self.validate_source():
+        if not self.REQUIRED_COLUMNS.issubset(self.df.columns):
             raise ValueError(f"DataFrame missing required columns: {self.REQUIRED_COLUMNS}")
         
-        definitions = []
-        for _, row in self.df.iterrows():
-            definitions.append(CubeDefinition(
-                name=row['cubes'],
-                multicube=row['multicubes'],
-                formula=row['formula']
-            ))
-        return definitions
+        return [
+            CubeDefinition(
+                name=r['cubes'], multicube=r['multicubes'], formula=r['formula']
+                for r in self.df.to_dict('records')
+            )
+        ]
