@@ -31,6 +31,6 @@ class MulticubesParser:
         internal_refs = (all_quoted & local_cubes) - external_cubes_found
 
         for item in internal_refs:
-            dependencies.add(current_mc, item)
+            dependencies.add((current_mc, item))
 
         return dependencies
