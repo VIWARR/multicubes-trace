@@ -16,6 +16,5 @@ class DataFrameAdapter(DataSourceAdapter):
         return [
             CubeDefinition(
                 name=r['cubes'], multicube=r['multicubes'], formula=r['formula']
-                for r in self.df.to_dict('records')
-            )
+            ) for r in self.df.to_dict('records')
         ]
