@@ -1,6 +1,6 @@
 import networkx as nx
 from typing import Dict, Set, List, Optional
-from core.models import Cube, Multicube, CubeDefinition
+from core.models import Cube, CubeDefinition
 from logic.parser import MulticubesParser
 from abc import ABC, abstractmethod
 import pandas as pd
