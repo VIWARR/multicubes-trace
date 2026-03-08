@@ -2,8 +2,6 @@ import networkx as nx
 from typing import Dict, Set, List, Optional
 from core.models import Cube, CubeDefinition
 from logic.parser import MulticubesParser
-from abc import ABC, abstractmethod
-import pandas as pd
 
 class Project:
     def __init__(self):
@@ -14,6 +12,7 @@ class Project:
     def build_from_definitions(self, definitions: List[CubeDefinition]):
         self.cubes.clear()
         self.graph.clear()
+        self._registry.clear()
 
         for d in definitions:
             cube = d.to_cube()
@@ -23,11 +22,20 @@ class Project:
 
             self.cubes[c_id] = cube
             self._registry.setdefault(cube.parent_multicube, set()).add(cube.name)
-            self.graph.add_node(c_id, type='cube')
-            self.graph.add_node(cube.parent_multicube, type='multicube')
+            
+            self.graph.add_node(
+                c_id, 
+                type='cube', 
+                multicube=cube.parent_multicube,
+                formula=cube.formula
+            )
+            
+            if cube.parent_multicube not in self.graph:
+                self.graph.add_node(cube.parent_multicube, type='multicube')
 
         edges_to_add = []
         mc_edges_to_add = set()
+        
         for c_id, cube in self.cubes.items():
             if not cube.formula:
                 continue
@@ -36,10 +44,13 @@ class Project:
 
             for src_mc, src_cube_name in deps:
                 src_id = f"{src_mc}:::{src_cube_name}"
+                
                 if src_id in self.cubes:
                     edges_to_add.append((src_id, c_id))
                     if src_mc != cube.parent_multicube:
                         mc_edges_to_add.add((src_mc, cube.parent_multicube))
+                else:
+                    print(f"⚠️ Куб '{c_id}' ссылается на '{src_id}', но он не найден в базе!")
 
         self.graph.add_edges_from(edges_to_add, type='dependency')
         self.graph.add_edges_from(mc_edges_to_add, type='multicube_dependency')
