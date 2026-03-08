@@ -1,151 +1,133 @@
 import streamlit as st
 import pandas as pd
-import tempfile
-import time
-import os
-import sys
-
-# Добавляем текущую директорию в путь, чтобы импорты работали корректно
-sys.path.append(os.path.dirname(__file__))
-
 from core.project import Project
-from infrastructure.adapters.dataframe_adapter import DataFrameAdapter
 from vizualization.renderers import Visualizer
+from infrastructure.adapters.dataframe_adapter import DataFrameAdapter
+import re
 
-# --- ИНИЦИАЛИЗАЦИЯ ИНТЕРФЕЙСА ---
-st.set_page_config(
-    page_title="OptiTrace Pro | Graph Analyzer",
-    page_icon="📊",
-    layout="wide"
-)
+st.set_page_config(layout="wide", page_title="CPM Audit Tool")
 
-st.title("📊 OptiTrace Professional")
-st.markdown("---")
-
-# --- ЛОГИКА ОБРАБОТКИ ДАННЫХ (КЭШИРУЕМАЯ) ---
-@st.cache_resource(show_spinner="Анализ связей и парсинг формул...")
-def build_project_cached(df: pd.DataFrame):
-    """
-    Строит проект один раз и хранит его в памяти. 
-    Пересборка только при изменении данных в Excel.
-    """
+@st.cache_resource
+def process_uploaded_file(uploaded_file):
+    df = pd.read_excel(uploaded_file)
     adapter = DataFrameAdapter(df)
     definitions = adapter.load_definitions()
-    
     project = Project()
     project.build_from_definitions(definitions)
     return project
 
-def clean_input_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Очистка данных перед обработкой (Senior Safety Check)"""
-    # 1. Приводим колонки к нижнему регистру
-    df.columns = [str(c).lower().strip() for c in df.columns]
-    
-    # 2. Маппинг имен (если в Excel они отличаются)
-    rename_map = {
-        'multicube': 'multicubes',
-        'cube': 'cubes',
-        'multicubes': 'multicubes',
-        'cubes': 'cubes'
-    }
-    df = df.rename(columns=rename_map)
-    
-    # 3. Удаляем строки без имен кубов или мультикубов (фикс вашей ошибки TypeError)
-    df = df.dropna(subset=['cubes', 'multicubes'])
-    
-    # 4. Принудительно в строку (чтобы исключить float/int в названиях)
-    df['cubes'] = df['cubes'].astype(str).str.strip()
-    df['multicubes'] = df['multicubes'].astype(str).str.strip()
-    
-    return df
+st.title("🔍 Аудит модели")
 
-def main():
-    # --- SIDEBAR ---
-    with st.sidebar:
-        st.header("⚙️ Управление")
-        
-        uploaded_file = st.file_uploader(
-            "Загрузите Excel файл модели", 
-            type=['xlsx', 'xls'],
-            help="Колонки: cubes, multicubes, formula"
-        )
-        
-        if not uploaded_file:
-            st.info("Пожалуйста, загрузите файл для визуализации.")
-            return
+# 1. Окно загрузки файла
+uploaded_file = st.sidebar.file_uploader("Загрузите выгрузку модели (xlsx)", type="xlsx")
 
-        # Загрузка и первичная очистка
-        try:
-            raw_df = pd.read_excel(uploaded_file)
-            df = clean_input_data(raw_df)
+if uploaded_file:
+    project = process_uploaded_file(uploaded_file)
+    visualizer = Visualizer(project)
+
+    all_mcs = sorted(list(project._registry.keys()))
+    selected_mc = st.sidebar.selectbox("Выберите мультикуб:", all_mcs)
+
+    if selected_mc:
+        tab_map, tab_deps, tab_structure = st.tabs([
+            "🗺 Карта связей", 
+            "🔗 Просмотр зависимостей", 
+            "📦 Кубы"
+        ])
+
+        with tab_map:
+            st.components.v1.html(visualizer.render(selected_mc), height=600)
+
+        with tab_deps:
+            st.subheader(f"Анализ связей: {selected_mc}")
             
-            # Строим проект
-            project = build_project_cached(df)
+            # Инициализация состояний, если их нет
+            if 'exp_all_cons' not in st.session_state: st.session_state.exp_all_cons = False
+            if 'exp_all_src' not in st.session_state: st.session_state.exp_all_src = False
+
+            col1, col2 = st.columns(2)
             
-            st.success(f"Анализ завершен! Кубов: {len(project.cubes)}")
-        except Exception as e:
-            st.error(f"Ошибка при чтении файла: {e}")
-            return
+            # --- ЛЕВАЯ КОЛОНКА: Referenced By (Потребители) ---
+            with col1:
+                c1_head, c1_btn = st.columns([2, 1])
+                c1_head.markdown("### 📥 Потребитель")
+                
+                # Динамический текст кнопки для Потребителей
+                label_cons = "Развернуть/Свернуть"
+                if c1_btn.button(label_cons, key="all_c"):
+                    st.session_state.exp_all_cons = not st.session_state.exp_all_cons
+                    st.rerun()
 
-        st.markdown("---")
-        st.subheader("🔍 Фильтры графа")
-        
-        # Безопасное получение списка МК (фикс TypeError со сравнением float)
-        all_mc = sorted([str(k) for k in project._registry.keys() if k])
-        
-        target_mc = st.selectbox("Фокусный мультикуб", all_mc)
-        
-        mode = st.radio(
-            "Режим отображения",
-            ["Full", "Cross-MC", "MC Only"],
-            index=1,
-            help="Full - все связи, Cross-MC - только между МК, MC Only - только агрегаты МК"
-        )
-        
-        show_internal = st.checkbox("Внутренние связи кубов", value=False)
-        
-        st.markdown("---")
-        st.metric("Узлов в базе", project.graph.number_of_nodes())
-        st.metric("Связей выявлено", project.graph.number_of_edges())
+                # Сбор данных
+                external_consumers = {}
+                search_pattern = f"'{selected_mc}'."
+                for c_id, cube in project.cubes.items():
+                    if cube.parent_multicube != selected_mc and search_pattern in str(cube.formula):
+                        cons_mc = cube.parent_multicube
+                        if cons_mc not in external_consumers: external_consumers[cons_mc] = []
+                        ref_match = re.search(f"'{re.escape(selected_mc)}'\.'([^']+)'", str(cube.formula))
+                        ref_cube = ref_match.group(1) if ref_match else "не определен"
+                        external_consumers[cons_mc].append({
+                            "target_cube": cube.name, "source_cube": ref_cube, "formula": cube.formula
+                        })
+                
+                if external_consumers:
+                    for cons_mc in sorted(external_consumers.keys()):
+                        # УРОВЕНЬ 1: Блок Мультикуба (скрывает кубы внутри)
+                        with st.expander(f"👥 {cons_mc}", expanded=st.session_state.exp_all_cons):
+                            for item in external_consumers[cons_mc]:
+                                st.markdown(f"**{item['target_cube']}**")
+                                st.caption(f"Источник: {item['source_cube']}")
+                                st.code(item['formula'], language="sql")
+                                st.markdown("---")
+                else:
+                    st.caption("Данные не используются в других модулях.")
 
-    # --- ОСНОВНАЯ ОБЛАСТЬ ---
-    col_viz, col_data = st.columns([3, 1])
+            # --- ПРАВАЯ КОЛОНКА: Used In (Источники) ---
+            with col2:
+                c2_head, c2_btn = st.columns([2, 1])
+                c2_head.markdown("### 📤 Источник")
+                
+                # Динамический текст кнопки для Источников
+                label_src = "Развернуть/Свернуть"
+                if c2_btn.button(label_src, key="all_s"):
+                    st.session_state.exp_all_src = not st.session_state.exp_all_src
+                    st.rerun()
 
-    with col_viz:
-        st.subheader(f"Граф зависимостей: {target_mc}")
-        
-        with st.spinner("Генерация визуализации..."):
-            viz = Visualizer(project)
-            net = viz.render(
-                focus_mc=target_mc,
-                show_internal=show_internal,
-                mode=mode
-            )
-            
-            # Сохранение и отображение
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as tmp:
-                net.save_graph(tmp.name)
-                with open(tmp.name, 'r', encoding='utf-8') as f:
-                    st.components.v1.html(f.read(), height=800)
-                os.unlink(tmp.name)
+                local_cubes = [c for c in project.cubes.values() if c.parent_multicube == selected_mc]
+                external_sources = {}
+                for c in local_cubes:
+                    if c.formula:
+                        matches = re.findall(r"'([^']+)'\.'([^']+)'", str(c.formula))
+                        for src_mc, src_cube in matches:
+                            if src_mc != selected_mc:
+                                if src_mc not in external_sources: external_sources[src_mc] = []
+                                external_sources[src_mc].append({
+                                    "target_cube": c.name, "source_cube": src_cube, "formula": c.formula
+                                })
+                
+                if external_sources:
+                    for src_mc in sorted(external_sources.keys()):
+                        # УРОВЕНЬ 1: Блок Мультикуба (скрывает кубы внутри)
+                        with st.expander(f"📦 {src_mc}", expanded=st.session_state.exp_all_src):
+                            for item in external_sources[src_mc]:
+                                st.markdown(f"**{item['target_cube']}**")
+                                st.caption(f"Ссылка на куб источника: {item['source_cube']}")
+                                st.code(item['formula'], language="sql")
+                                st.markdown("---")
+                else:
+                    st.caption("Внешние источники не найдены.")
 
-    with col_data:
-        st.subheader("📋 Состав МК")
-        
-        # Информация о кубах в выбранном МК
-        mc_cubes = [c for c in project.cubes.values() if c.parent_multicube == target_mc]
-        
-        st.write(f"**Мультикуб:** `{target_mc}`")
-        st.write(f"**Количество кубов:** {len(mc_cubes)}")
-        
-        # Поиск по кубам (удобно при 12к элементах)
-        search = st.text_input("Поиск куба в этом МК", "")
-        
-        for c in mc_cubes:
-            if search.lower() in c.name.lower():
-                icon = "🟢" if c.formula else "🔵"
-                with st.expander(f"{icon} {c.name}"):
-                    st.code(c.formula if c.formula else "Manual Input", language='sql')
+        with tab_structure:
+            st.subheader(f"Кубы внутри {selected_mc}")
+            cubes_data = []
+            for cube_name in sorted(list(project._registry.get(selected_mc, []))):
+                cube_obj = project.get_cube(selected_mc, cube_name)
+                cubes_data.append({
+                    "Куб": cube_name,
+                    "Формула": cube_obj.formula if cube_obj else ""
+                })
+            st.dataframe(pd.DataFrame(cubes_data), use_container_width=True)
 
-if __name__ == "__main__":
-    main()
+else:
+    st.info("Пожалуйста, загрузите XLSX файл для начала работы.")
