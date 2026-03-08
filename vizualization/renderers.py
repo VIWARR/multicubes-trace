@@ -1,116 +1,57 @@
-from pyvis.network import Network
-import networkx as nx
 import json
+import re
 
 class Visualizer:
-    COLOR_INPUT = "#3498DB"
-    COLOR_CALC = "#27AE60"
-    COLOR_MC = "#2C3E50"
-
     def __init__(self, project):
         self.project = project
 
-    def render(self, focus_mc: str, show_internal: bool = True, mode: str = "Full"):
-        # 1. Инициализация с оптимизированными настройками физики
-        net = Network(height="750px", width="100%", directed=True, bgcolor="#ffffff")
-        
-        # Senior Tip: Отключаем физику после стабилизации, чтобы браузер не тормозил
-        self._set_optimized_options(net)
+    def _js_safe(self, text):
+        return re.sub(r'[^a-zA-Z0-9а-яА-Я_]', '_', str(text))
 
-        full_graph = self.project.graph
+    def render(self, focus_mc: str):
+        target_mcs = {focus_mc}
+        edges_to_render = []
 
-        # 2. Выбор стратегии фильтрации (Optimization: O(k) вместо O(N))
-        if mode == "MC Only":
-            # Берем только узлы типа multicube
-            display_nodes = [n for n, d in full_graph.nodes(data=True) if d.get('type') == 'multicube']
-            subgraph = full_graph.subgraph(display_nodes)
-        else:
-            # Извлекаем подграф: Фокусный МК + его прямые связи (1-2 уровня)
-            # Это радикально снижает нагрузку с 12500 до ~200-500 узлов
-            subgraph = self._get_focused_subgraph(full_graph, focus_mc, show_internal, mode)
+        for u, v, d in self.project.graph.edges(data=True):
+            if d.get('type') == 'multicube_dependency':
+                if u == focus_mc or v == focus_mc:
+                    target_mcs.add(u)
+                    target_mcs.add(v)
+                    is_out = (u == focus_mc)
+                    edges_to_render.append({
+                        "from": self._js_safe(u), "to": self._js_safe(v),
+                        "color": "#e67e22" if is_out else "#95a5a6",
+                        "width": 3 if is_out else 1.5
+                    })
 
-        # 3. Лимит безопасности
-        if subgraph.number_of_nodes() > 1500:
-            # Если даже подграф огромный, берем только самое важное
-            return self._render_too_many_nodes_message(subgraph.number_of_nodes())
-
-        # 4. Эффективное добавление данных
-        for node_id, data in subgraph.nodes(data=True):
-            self._add_node_to_net(net, node_id, data, focus_mc)
-
-        for u, v, data in subgraph.edges(data=True):
-            # Проверка фильтров для ребер
-            if mode == "Cross-MC" and subgraph.nodes[u].get('multicube') == subgraph.nodes[v].get('multicube'):
-                continue
-            net.add_edge(u, v, color="#ABB2B9", arrowStrikethrough=False)
-
-        return net
-
-    def _get_focused_subgraph(self, G, focus_mc, show_internal, mode):
-        """Извлечение только релевантной части графа."""
-        # Узлы внутри целевого МК
-        target_nodes = [n for n, d in G.nodes(data=True) if d.get('multicube') == focus_mc]
-        
-        # Соседи (входящие и исходящие зависимости)
-        neighbors = set()
-        for node in target_nodes:
-            neighbors.update(G.predecessors(node))
-            neighbors.update(G.successors(node))
-        
-        all_relevant = set(target_nodes) | neighbors
-        
-        # Если режим Full, добавляем еще один уровень или МК-узлы
-        mc_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'multicube']
-        all_relevant.update(mc_nodes)
-
-        return G.subgraph(all_relevant)
-
-    def _add_node_to_net(self, net, node_id, data, focus_mc):
-        node_type = data.get('type')
-        if node_type == 'multicube':
-            net.add_node(node_id, label=node_id, shape="database", color=self.COLOR_MC, size=25)
-        else:
-            is_target = data.get('multicube') == focus_mc
-            color = self.COLOR_CALC if data.get('formula') else self.COLOR_INPUT
+        nodes_js = []
+        for mc in target_mcs:
+            is_focus = (mc == focus_mc)
+            color = "#e67e22" if is_focus else "#2c3e50"
             
-            # Улучшаем производительность: отключаем тени и сложные формы для массовки
-            net.add_node(
-                node_id,
-                label=data.get('label', node_id),
-                color=color,
-                borderWidth=3 if is_target else 1,
-                size=20 if is_target else 12,
-                title=f"MC: {data.get('multicube')}\nFormula: {data.get('formula') or 'Input'}"
-            )
+            # Оставляем только название (пункт 2 вашего запроса)
+            html = f"""
+            <div xmlns="http://www.w3.org/1999/xhtml" style="border:2px solid {color}; border-radius:4px; background:#fff; width:180px; padding:10px; font-family:sans-serif; text-align:center;">
+                <div style="color:{color}; font-weight:bold; font-size:13px; word-wrap:break-word;">{mc}</div>
+            </div>
+            """.replace('\n', '').replace('"', "'")
 
-    def _set_optimized_options(self, net):
-        """Настройки физики для мгновенного рендеринга больших графов."""
-        options = {
-            "physics": {
-                "stabilization": {
-                    "enabled": True, 
-                    "iterations": 100,
-                    "updateInterval": 25
-                },
-                "barnesHut": {
-                    "gravitationalConstant": -2000, 
-                    "springLength": 200,
-                    "avoidOverlap": 0.5
-                },
-                "solver": "barnesHut"
-            },
-            "edges": {
-                "smooth": {"type": "continuous"},
-                "hoverWidth": 0.5
-            },
-            "interaction": {
-                "hideEdgesOnDrag": True,
-                "hideNodesOnDrag": False,
-                "hover": True
-            }
-        }
-        
-        # Правильный Senior-способ передачи настроек: 
-        # Сериализуем словарь в чистую JSON-строку
-        opts_json = json.dumps(options)
-        net.set_options(opts_json)
+            nodes_js.append({"id": self._js_safe(mc), "innerHtml": html})
+
+        return f"""
+        <html>
+        <head><script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script></head>
+        <body><div id="net" style="width:100vw; height:100vh;"></div><script>
+            function createSvg(html) {{
+                return "data:image/svg+xml;charset=utf-8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><foreignObject width="100%" height="100%">' + html + '</foreignObject></svg>');
+            }}
+            var nodes = new vis.DataSet({json.dumps(nodes_js)}.map(n => ({{ id: n.id, shape: 'image', image: createSvg(n.innerHtml), size: 50 }})));
+            var edges = new vis.DataSet({json.dumps(edges_to_render)});
+            var options = {{
+                layout: {{ hierarchical: {{ enabled: true, direction: 'LR', sortMethod: 'hubsize', levelSeparation: 350 }} }},
+                physics: {{ enabled: false }},
+                edges: {{ arrows: 'to', smooth: {{ type: 'cubicBezier', forceDirection: 'horizontal' }} }}
+            }};
+            new vis.Network(document.getElementById('net'), {{nodes: nodes, edges: edges}}, options).once('stabilizationIterationsDone', function() {{ this.fit(); }});
+        </script></body></html>
+        """
