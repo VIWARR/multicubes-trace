@@ -17,7 +17,7 @@ class MulticubesParser:
         
         dependencies = set()
 
-        # 1. Извлекаем явные внешние ссылки
+        # 1. Извлекаем внешние ссылки строго по паттерну 'MC'.'Cube'
         external_refs = cls.EXT_REF_RE.findall(formula)
         external_cubes_found = set()
 
