@@ -13,9 +13,10 @@ class DataFrameAdapter(DataSourceAdapter):
         if not self.REQUIRED_COLUMNS.issubset(self.df.columns):
             raise ValueError(f"DataFrame missing required columns: {self.REQUIRED_COLUMNS}")
         
-        df = self.df.dropna(subset=['multicubes', 'cubes'])
+        df = self.df.dropna(subset=['multicubes', 'cubes']).copy()
         df['multicubes'] = df['multicubes'].astype(str)
         df['cubes'] = df['cubes'].astype(str)
+        df['formula'] = df['formula'].fillna('').astype(str)
         
         return [
             CubeDefinition(
